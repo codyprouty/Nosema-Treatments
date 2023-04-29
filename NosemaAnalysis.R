@@ -13,8 +13,15 @@ library(multcomp)
 library(brglm2)
 library(afex)
 library(survival)
+library(coxme)
+library(DHARMa)
+library(car)
+library(mgcv)
+library(fitdistrplus)
+library(pscl)
+library(AER)
 ##
-setwd()
+setwd("C:/Users/codyp/Desktop/WorkBackup/Research/HBREL/NosemaMS")
 #Load datasheets
 Consumption <- read.csv("Consumption.csv")
 Intensity <- read.csv("Intensity.csv")
@@ -29,6 +36,7 @@ Study2 <- read.csv("Study2.csv")
 
 #Data organization
 Prevalence$Event <- as.factor(Prevalence$Event)
+Prevalence$Cage <- as.factor(Prevalence$Cage)
 Intensity$Event <- as.factor(Intensity$Event)
 HiveAlive$MitesBees1 <- (HiveAlive$Mites1/HiveAlive$Bees1)*100
 HiveAlive$MitesBees2 <- (HiveAlive$Mites2/HiveAlive$Bees2)*100
@@ -37,6 +45,7 @@ HiveAlive$MitesBees4 <- (HiveAlive$Mites4/HiveAlive$Bees4)*100
 HiveAlive$MitesBees5 <- (HiveAlive$Mites5/HiveAlive$Bees5)*100
 HiveAliveV$MitesBees <- (HiveAliveV$Mites/HiveAliveV$Bees) *100
 HiveAliveV$Week <- as.factor(HiveAliveV$Week)
+HiveAliveV$Spores1 <- HiveAliveV$Spores * 50000
 names(Study1V)[1]<- "Treatment"
 Study1V$Time <- as.factor(Study1V$Time)
 names(Study2)[1] <- "Hive"
@@ -71,35 +80,30 @@ anova(Syrup)
 #Effect of treatment on intensity of Nosema
 Int <- lm(Spores ~ Treatment*Event, data = Intensity)
 anova(Int, test="F")
+
+lsm<-lsmeans (Int, list( ~ Event))
+cld(lsm)
 ###
 
 #Effect of treatment on prevalence of Nosema
-Prev <- glm(Prevalence ~ Treatment*Event, family=poisson(link="log"), data = Prevalence)
-anova(Prev, test="Chisq")
+Prev <- glmer(Infected ~ Treatment*Event + (1|Cage), family=binomial(link="logit"), data = Prevalence)
+Anova(Prev, type=3)
 
-lsm<-lsmeans (Prev, list( ~ Treatment+Event))
-cld(lsm)
+
+
+sim_bmond <- simulateResiduals(fittedModel = Prev, n = 250)
+hist(sim_bmond)
+plot(sim_bmond)
 ###
 
-#Binary survival
-Surv <- glm(Censor ~ Treatment, family=binomial(link="logit"), data = Survival)
-anova(Surv, test="Chisq")
-
-lsm<-lsmeans (Surv, list( ~ Treatment))
-cld(lsm)
-###
-
-#Death day
-SurvDD <- subset(Survival, Censor == 0)
-#Subsetting so the analysis is only on bees that died
-DD <- glm(Longevity ~ Treatment, family=poisson(link="log"), data = SurvDD)
-anova(Surv, test="Chisq")
-
-lsm<-lsmeans (DD, list( ~ Treatment))
-cld(lsm)
+#Survival
+m1 <- coxph(Surv(Longevity, Censor) ~ Treatment, data = Survival)
+anova(m1)
+summary(m1)
 ###
 
 #Survival graph and analysis
+tgcPrev <- summarySE(Prevalence, measurevar="Infected", groupvars=c("Treatment", "Event"))
 Survival$SurvObj <- with(Survival, Surv(Longevity, Censor == 0))
 
 survdiff(Surv(Longevity, Censor) ~ Treatment, Survival)
@@ -114,16 +118,20 @@ legend("bottomleft", c("Control", "Fumagilin", "HoneyBHealthy", "Nozevit"), col=
 Bees <- lmer(Bees ~ Treatment+(1|Hive), data = HiveAliveV)
 anova(Bees)
 #Bees do not differ significantly between treatments, so we can use the poisson distribution for raw mite counts
+HiveAliveV$MitesBees.t <- HiveAliveV$MitesBees + 1
+HiveAliveV$MitesBees.L <- log10(HiveAliveV$MitesBees.t)
+Mites <- glmer(MBBin ~ Treatment*Week +(1|Hive), family=binomial(link="logit"), data = HiveAliveV)
+Anova(Mites)
 
-Mites <- mixed(Mites ~ Treatment*Week +(1|Hive), family= poisson(link="log"), data = HiveAliveV,method="LRT")
-
-lsm<-lsmeans (Mites, list( ~ Treatment*Week))
+lsm<-lsmeans (Mites, list( ~ Treatment))
 cld(lsm)
 ###
 
 #Nosema on treatment and time
-Nos <- lmer(Spores ~ Treatment*Week + (1|Hive), data = HiveAliveV)
-anova(Nos)
+HiveAliveV$Spores1.t <- HiveAliveV$Spores1 + 1
+HiveAliveV$Spores1.L <- log10(HiveAliveV$Spores1.t)
+Nos <- lmer(Spores1.L ~ Treatment*Week + (1|Hive), data = HiveAliveV)
+Anova(Nos)
 
 lsm<-lsmeans (Nos, list( ~ Treatment*Week))
 cld(lsm)
@@ -137,31 +145,35 @@ anova(Brood, test="F")
 ###
 
 #Bees estimation
-Bees <- lm(number.of.bees ~ ï..Treatment, data = Master1)
+Bees <- lm(number.of.bees ~ Treatment, data = Study1)
 anova(Bees, test="F")
 ###
 
 #Number of Spores
-Spores <- lmer(SporesRaw ~ Treatment*Time + (1|Colony), data = Study1V)
-anova(Spores, test="F")
+Study1V$Spores.t <- Study1V$Spores + 1
+Study1V$Spores.L <- log10(Study1V$Spores.t)
+Spores <- lmer(Spores.L ~ Ingred*Time+(1|Colony), data = Study1V)
+anova(Spores)
 
-resids <- resid(Spores)
-hist(resids, breaks = 10, xlab="residuals")
-shapiro.test(resids)
-#Spore counts are not normally distributed, so the poisson distribution will be used (count data).
-
-Spores <- mixed(SporesRaw ~ Treatment*Time + (1|Colony), family=poisson(link = "log"), data = Study1V, method="LRT")
-anova(Spores, test="Chisq")
-
-lsm<-lsmeans (Spores, list( ~ Treatment*Time))
+lsm<-lsmeans (Spores, list( ~ Time + Ingred))
 cld(lsm)
+
+sim_bmond <- simulateResiduals(fittedModel = Spores, n = 250)
+hist(sim_bmond)
+plot(sim_bmond)
+
 #MCs are a mess, break datasheet by time sampled
 Time0 <- subset(Study1V, Time == 0)
 Time1 <- subset(Study1V, Time == 1)
 Time2 <- subset(Study1V, Time == 2)
 Time3 <- subset(Study1V, Time == 3)
 
-mixed(SporesRaw ~ Treatment + (1|Colony), family=poisson(link = "log"), data = Time0, method="LRT")
+Sp <- lm(Spores.L ~ Ingred, data = Time1)
+anova(Sp)
+summary(Sp)
+
+lsm<-lsmeans (Sp, list( ~ Ingred))
+cld(lsm)
 
 #There were no significant differences within sampling times.
 
@@ -188,18 +200,21 @@ anova(Bees, test="F")
 ###
 
 #Number of spores
-Spores <- lmer(SporesRaw ~ Treatment*Time + (1|Hive), data = Study2)
-anova(Spores, test="F")
+Study2$Spores <- Study2$SporesRaw * 50000
+Study2$Spores.t <- Study2$Spores + 1
+Study2$Spores.L <- log10(Study2$Spores.t)
+Spores <- lmer(Spores.L ~ Treatment*Time + (1|Hive), data = Study2)
+Anova(Spores)
 
-resids <- resid(Spores)
-hist(resids, breaks = 10, xlab="residuals")
-shapiro.test(resids)
+sim_bmond <- simulateResiduals(fittedModel = Spores, n = 250)
+hist(sim_bmond)
+plot(sim_bmond)
 #Same as the previous experiment, not normally distributed. We will used the Poisson distribution
 
-Spores <- mixed(SporesRaw ~ Treatment*Time + (1|Hive), family=poisson(link = "log"), data = Study2, method="LRT")
-anova(Spores, test="Chisq")
+Spores <- mixed(Spores.t ~ Treatment*Time + (1|Hive), family=gaussian(link = "log"), data = Study2, method="LRT")
+Spores
 
-lsm<-lsmeans (Spores, list( ~ Treatment*Time))
+lsm<-lsmeans (Spores, list( ~ Time+Ingred))
 cld(lsm)
 
 #Split up by time sampled
@@ -208,7 +223,8 @@ Time1 <- subset(Study2, Time == 1)
 Time2 <- subset(Study2, Time == 2)
 Time4 <- subset(Study2, Time == 4)
 
-Spores <- mixed(SporesRaw ~ Treatment + (1|Hive), family=poisson(link = "log"), data = Time1, method="LRT")
+Spores <- lm(Spores.L ~ Treatment, data = Time4)
+anova(Spores)
 #Significant differences only occur at time 1
 
 lsm<-lsmeans (Spores, list( ~ Treatment))
